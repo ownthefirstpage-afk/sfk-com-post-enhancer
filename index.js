@@ -10,7 +10,7 @@ const app = express();
 app.use(express.json());
 
 // ── CONFIG ────────────────────────────────────────────────────────
-const WP_URL = 'https://sprayfoamkings.ca';
+const WP_URL = 'https://sprayfoamkings.com';
 const WP_USER = 'molt1982';
 const WP_PASS = process.env.WP_APP_PASSWORD || 'NhLS 8Xjb t3qR Yia7 idL0 BKUG';
 const WP_AUTH = 'Basic ' + Buffer.from(`${WP_USER}:${WP_PASS}`).toString('base64');
