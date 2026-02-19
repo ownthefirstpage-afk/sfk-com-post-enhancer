@@ -21,7 +21,7 @@ const YT_CHANNEL_ID = process.env.YT_CHANNEL_ID || '';
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const AUTH_TOKEN = process.env.RAILWAY_AUTH_TOKEN || 'moltbot-railway-secret';
-const RAILWAY_URL = process.env.RAILWAY_URL || 'https://sfk-post-enhancer-production.up.railway.app';
+const RAILWAY_URL = process.env.RAILWAY_URL || 'https://sfk-com-post-enhancer-production.up.railway.app';
 
 // Toronto geo coords
 const GEO = { lat: 43.6532, lng: -79.3832 };
