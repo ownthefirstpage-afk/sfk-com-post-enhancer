@@ -1,5 +1,6 @@
-// Railway Enhancer Service - SFK Post Enhancer (POLLING VERSION)
-// Removed callback dependency - polls Kei.ai task status instead
+// Railway Enhancer Service - SFK Post Enhancer
+// Triggered by seo-blast-worker-sfk after publish
+// Does: kie.ai image (callback) → WP featured image → YouTube embed → RankMath fix → Telegram notify
 
 const express = require('express');
 const axios = require('axios');
@@ -20,13 +21,17 @@ const YT_CHANNEL_ID = process.env.YT_CHANNEL_ID || '';
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const AUTH_TOKEN = process.env.RAILWAY_AUTH_TOKEN || 'moltbot-railway-secret';
+const RAILWAY_URL = process.env.RAILWAY_URL || 'https://sfk-com-post-enhancer-production.up.railway.app';
 
 // Toronto geo coords
 const GEO = { lat: 43.6532, lng: -79.3832 };
 
+// In-memory pending kie.ai jobs
+const pendingJobs = new Map();
+
 // ── AUTH MIDDLEWARE ───────────────────────────────────────────────
 app.use((req, res, next) => {
-  if (req.path === '/health') return next();
+  if (req.path === '/health' || req.path === '/kie-callback') return next();
   const key = req.headers['x-moltbot-key'];
   if (key !== AUTH_TOKEN) return res.status(401).json({ error: 'unauthorized' });
   next();
@@ -41,16 +46,48 @@ async function tgSend(msg) {
   }).catch(() => {});
 }
 
-// ── STEP 1: GENERATE IMAGE VIA KIE.AI (WITH POLLING) ───────────────
-async function generateImage(imagePrompt) {
+// ── KIE.AI CALLBACK ENDPOINT ─────────────────────────────────────
+app.post('/kie-callback', (req, res) => {
+  res.json({ ok: true });
+  const data = req.body?.data;
+  const taskId = data?.taskId;
+  const state = data?.state;
+  console.log('kie.ai callback received:', taskId, state);
+
+  const job = pendingJobs.get(taskId);
+  if (!job) return;
+
+  if (state === 'success') {
+    try {
+      const result = JSON.parse(data.resultJson || '{}');
+      const imgUrl = result?.resultUrls?.[0];
+      if (imgUrl) {
+        pendingJobs.delete(taskId);
+        job.resolve(imgUrl);
+      } else {
+        pendingJobs.delete(taskId);
+        job.reject(new Error('kie.ai: no image URL in callback'));
+      }
+    } catch(e) {
+      pendingJobs.delete(taskId);
+      job.reject(new Error('kie.ai: failed to parse resultJson'));
+    }
+  } else if (state === 'fail') {
+    pendingJobs.delete(taskId);
+    job.reject(new Error(`kie.ai: generation failed - ${data?.failMsg || 'unknown'}`));
+  }
+});
+
+// ── STEP 1: GENERATE IMAGE VIA KIE.AI ────────────────────────────
+async function generateImage(imagePrompt, aspectRatio = '16:9') {
   console.log('Generating image:', imagePrompt.substring(0, 80));
 
-  // Create task without callback
   const createRes = await axios.post('https://api.kie.ai/api/v1/jobs/createTask', {
     model: 'nano-banana-pro',
+    callBackUrl: `${RAILWAY_URL}/kie-callback`,
     input: {
       prompt: imagePrompt,
-      aspect_ratio: '16:9',
+      aspect_ratio: aspectRatio,
       resolution: '1K',
       output_format: 'jpg'
     }
@@ -65,41 +102,51 @@ async function generateImage(imagePrompt) {
   if (!taskId) throw new Error(`kie.ai: no taskId. Response: ${JSON.stringify(createRes.data)}`);
   console.log('kie.ai task created:', taskId);
 
-  // Poll for completion
-  const maxAttempts = 60; // 60 * 2 seconds = 2 minutes
-  let attempts = 0;
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pendingJobs.delete(taskId);
+      reject(new Error('kie.ai: timeout after 120 seconds'));
+    }, 120000);
 
-  while (attempts < maxAttempts) {
-    await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds between polls
-    attempts++;
-
-    try {
-      const statusRes = await axios.get(`https://api.kie.ai/api/v1/jobs/queryTask?taskId=${taskId}`, {
-        headers: {
-          'Authorization': `Bearer ${KIE_API_KEY}`
-        }
-      });
-
-      const status = statusRes.data?.data;
-      console.log(`Poll ${attempts}: task status =`, status?.state);
-
-      if (status?.state === 'success') {
-        const imgUrl = status?.resultUrls?.[0];
-        if (imgUrl) {
-          console.log('Image generated successfully');
-          return imgUrl;
-        }
-      } else if (status?.state === 'fail') {
-        throw new Error(`kie.ai generation failed: ${status?.failMsg || 'unknown'}`);
-      }
-    } catch(e) {
-      if (e.message.includes('generation failed')) throw e;
-      console.error(`Poll attempt ${attempts} error:`, e.message);
-    }
-  }
-
-  throw new Error('kie.ai: timeout after polling for 120 seconds');
+    pendingJobs.set(taskId, {
+      resolve: (url) => { clearTimeout(timeout); resolve(url); },
+      reject: (err) => { clearTimeout(timeout); reject(err); }
+    });
+  });
 }
+
+// ── NEW: GENERATE IMAGE ENDPOINT (FOR SOCIAL POSTS) ───────────────
+app.post('/generate-image', async (req, res) => {
+  const { prompt, topic } = req.body;
+  
+  if (!prompt && !topic) {
+    return res.status(400).json({ error: 'prompt or topic required' });
+  }
+  
+  const imagePrompt = prompt || `Professional spray foam insulation contractor in Toronto applying foam insulation about ${topic}, safety equipment, high quality work, realistic photo, modern, clean`;
+  
+  console.log(`\n=== GENERATING IMAGE FOR SOCIAL POST ===`);
+  console.log('Prompt:', imagePrompt.substring(0, 100));
+  
+  try {
+    const imageUrl = await generateImage(imagePrompt, '1:1'); // Square for social media
+    
+    console.log('✅ Image generated:', imageUrl);
+    
+    res.json({
+      success: true,
+      url: imageUrl,
+      prompt: imagePrompt
+    });
+    
+  } catch (error) {
+    console.error('Image generation failed:', error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
 
 // ── STEP 2: DOWNLOAD + PROCESS IMAGE ─────────────────────────────
 async function downloadAndProcess(imgUrl, title) {
@@ -240,7 +287,7 @@ app.post('/enhance', async (req, res) => {
 });
 
 // ── HEALTH ────────────────────────────────────────────────────────
-app.get('/health', (_, res) => res.json({ ok: true, service: 'SFK Post Enhancer (Polling)', version: '2.0.0' }));
+app.get('/health', (_, res) => res.json({ ok: true, service: 'SFK Post Enhancer', version: '1.1.0' }));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Railway SFK Enhancer v2 (polling) running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Railway SFK Enhancer v1.1 running on port ${PORT}`));
