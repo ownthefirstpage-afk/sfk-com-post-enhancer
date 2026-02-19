@@ -104,9 +104,9 @@ async function generateImage(imagePrompt, aspectRatio = '16:9') {
 
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
-      pendingJobs.delete(taskId);
-      reject(new Error('kie.ai: timeout after 120 seconds'));
-    }, 120000);
+  pendingJobs.delete(taskId);
+  reject(new Error('kie.ai: timeout after 180 seconds'));
+}, 180000);
 
     pendingJobs.set(taskId, {
       resolve: (url) => { clearTimeout(timeout); resolve(url); },
